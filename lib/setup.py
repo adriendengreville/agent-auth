@@ -95,6 +95,8 @@ def main():
             if P(f).exists() and hashlib.sha256(P(f).read_bytes()).hexdigest()!=d['installed']:
                 raise RuntimeError(f'{f} changed after installation. Merge with {d["backup"]} manually before uninstalling.')
         service('stop')
+        # Restoring ordinary SSH must not expose a retained agent authorized_keys.
+        run('usermod','--expiredate','1','agent')
         for f,d in m.items():
             if d['existed']: shutil.copy2(d['backup'], f)
             else: P(f).unlink(missing_ok=True)
@@ -125,6 +127,7 @@ def main():
         write(STATE/'account-created','agent\n')
         # Random unknown password avoids locked-account PAM checks; SSH disallows password auth.
         run('chpasswd',input='agent:'+secrets.token_urlsafe(48)+'\n',text=True,stdout=subprocess.DEVNULL)
+    run('usermod','--expiredate','','agent')
     run('ssh-keygen','-A',stdout=subprocess.DEVNULL)
     P('/run/sshd').mkdir(mode=0o755,exist_ok=True)
     files={}

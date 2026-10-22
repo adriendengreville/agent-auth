@@ -51,4 +51,7 @@ run('/src/configure','--uninstall')
 assert P('/etc/pam.d/sshd').read_bytes()==original
 time.sleep(2)
 assert conn('owner',2223,'key',key)=='owner'
-print('PASS uninstall restores PAM and administrator access')
+try:conn('agent',2223,'key',key)
+except paramiko.AuthenticationException:pass
+else:raise AssertionError('Uninstalled agent account still accessible')
+print('PASS uninstall restores administrator access and expires agent account')

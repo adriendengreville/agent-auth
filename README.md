@@ -103,7 +103,8 @@ silently adopted.
 ```
 
 Uninstall restores backed-up SSH/PAM/service configuration, retaining the account,
-packages and private enrollment for deliberate cleanup. It refuses to overwrite
+packages and private enrollment for deliberate cleanup. The retained agent account
+is expired to prevent login through restored administrator SSH configuration. It refuses to overwrite
 files changed since installation; inspect the manifest and merge changes manually.
 Configuration validation failures restore the files modified in that attempt.
 Package installation, host-key creation, and account creation are not rolled back.
