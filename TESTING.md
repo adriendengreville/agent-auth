@@ -7,6 +7,7 @@ the interactive installer, and performs SSH authentication with Paramiko.
 Verified locally:
 
 - Debian 12 (bookworm), default `/bin/sh` (dash).
+- Ubuntu 24.04, default `/bin/sh` (dash).
 - Alpine 3.22, BusyBox ash and the distro's `sshd.pam` package.
 - POSIX entry-point help under macOS sh, bash, and zsh (installer itself targets Linux).
 
