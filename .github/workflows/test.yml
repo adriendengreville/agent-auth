@@ -1,0 +1,26 @@
+name: SSH integration
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['debian:bookworm-slim', 'ubuntu:24.04', 'alpine:3.22']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test actual SSH authentication
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          docker run --rm -v "$PWD:/src" "$IMAGE" sh -c '
+            if command -v apk >/dev/null; then
+              apk add --no-cache openssh-server-pam google-authenticator libqrencode-tools python3 shadow linux-pam py3-paramiko py3-pexpect
+            else
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y python3-paramiko python3-pexpect openssh-server
+            fi
+            AGENT_AUTH_DISPOSABLE=yes python3 -u /src/tests/integration.py
+          '

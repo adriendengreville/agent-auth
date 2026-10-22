@@ -1,0 +1,54 @@
+"""Destructive integration test: run ONLY in a disposable Linux container as root."""
+import base64, hashlib, hmac, os, pathlib, re, socket, struct, subprocess, sys, time
+import pexpect, paramiko
+P=pathlib.Path
+if os.environ.get('AGENT_AUTH_DISPOSABLE')!='yes': raise SystemExit('Requires AGENT_AUTH_DISPOSABLE=yes')
+def run(*args,**kw): return subprocess.run(args,check=True,**kw)
+def otp(seed):
+    d=hmac.new(base64.b32decode(seed),struct.pack('>Q',int(time.time())//30),hashlib.sha1).digest(); n=d[-1]&15
+    return f'{(struct.unpack(">I",d[n:n+4])[0]&0x7fffffff)%1000000:06d}'
+run('ssh-keygen','-A'); P('/run/sshd').mkdir(exist_ok=True)
+run('useradd','-m','-s','/bin/sh','owner'); run('chpasswd',input=b'owner:fixture-owner-password\n')
+key=paramiko.RSAKey.generate(2048)
+p=P('/home/owner/.ssh');p.mkdir(mode=0o700);(p/'authorized_keys').write_text(key.get_name()+' '+key.get_base64()+'\n');os.chmod(p/'authorized_keys',0o600)
+run('chown','-R','owner:owner',str(p))
+P('/etc/ssh/sshd_config').write_text('Port 2223\nUsePAM yes\nPasswordAuthentication yes\nPubkeyAuthentication yes\nPidFile /run/sshd.pid\n')
+sshd='/usr/sbin/sshd.pam' if P('/usr/sbin/sshd.pam').exists() else '/usr/sbin/sshd'
+run(sshd)
+original=P('/etc/pam.d/sshd').read_bytes()
+child=pexpect.spawn('/bin/sh',['/src/configure'],timeout=300,encoding='utf-8')
+child.expect(r'Manual generation key: ([A-Z2-7]+)');seed=child.match.group(1)
+child.expect('Enter the current code from your authenticator:');child.sendline(otp(seed));child.expect(pexpect.EOF);child.close()
+if child.exitstatus!=0: raise AssertionError('configure failed: '+child.before)
+# Even an explicitly installed key must not bypass OTP.
+p=P('/home/agent/.ssh');p.mkdir(mode=0o700);(p/'authorized_keys').write_text(key.get_name()+' '+key.get_base64()+'\n');os.chmod(p/'authorized_keys',0o600)
+run('chown','-R','agent:agent',str(p))
+def conn(user,port,method,value):
+    t=paramiko.Transport(('127.0.0.1',port));t.start_client(timeout=10)
+    try:
+        if method=='otp':t.auth_interactive(user,lambda title,instructions,prompts:[value]*len(prompts))
+        elif method=='key':t.auth_publickey(user,value)
+        else:t.auth_password(user,value,fallback=False)
+        c=t.open_session();c.exec_command('id -un');result=c.makefile().read().decode().strip();return result
+    finally:t.close()
+assert conn('owner',2223,'key',key)=='owner';print('PASS administrator key preserved')
+assert conn('owner',2223,'password','fixture-owner-password')=='owner';print('PASS administrator password preserved')
+for user,port,method,value in [('agent',2223,'otp',otp(seed)),('agent',2222,'key',key),('agent',2222,'password','anything'),('owner',2222,'key',key),('agent',2222,'otp','000000')]:
+    try:conn(user,port,method,value)
+    except (paramiko.AuthenticationException,paramiko.SSHException):pass
+    else:raise AssertionError('Unexpected authentication success '+str((user,port,method)))
+print('PASS alternate login paths and wrong OTP rejected')
+# Wrong attempt and previous test connections may trigger rate limiting.
+time.sleep(31)
+code=otp(seed);assert conn('agent',2222,'otp',code)=='agent';print('PASS valid OTP opens agent session')
+try:conn('agent',2222,'otp',code)
+except paramiko.AuthenticationException:pass
+else:raise AssertionError('Replay accepted')
+print('PASS OTP replay rejected')
+run('su','-s','/bin/sh','agent','-c','test ! -r /etc/agent-auth/agent.totp')
+print('PASS agent cannot read seed')
+run('/src/configure','--uninstall')
+assert P('/etc/pam.d/sshd').read_bytes()==original
+time.sleep(2)
+assert conn('owner',2223,'key',key)=='owner'
+print('PASS uninstall restores PAM and administrator access')
