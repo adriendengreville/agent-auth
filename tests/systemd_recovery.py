@@ -6,6 +6,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import time
 
 if os.environ.get('AGENT_AUTH_DISPOSABLE') != 'yes':
     raise SystemExit('Requires AGENT_AUTH_DISPOSABLE=yes')
@@ -17,8 +18,15 @@ unit_file = Path('/etc/systemd/system') / unit
 if unit_file.exists(): raise SystemExit('Refusing to overwrite existing unit')
 def run(*args): return subprocess.run(args, check=True, capture_output=True, text=True).stdout.strip()
 def banner():
-    with socket.create_connection(('127.0.0.1', 22991), timeout=5) as connection:
-        assert connection.recv(256).startswith(b'SSH-2.0-')
+    # Type=simple reports started before sshd has bound its socket.
+    for attempt in range(50):
+        try:
+            with socket.create_connection(('127.0.0.1', 22991), timeout=5) as connection:
+                assert connection.recv(256).startswith(b'SSH-2.0-')
+            return
+        except ConnectionRefusedError:
+            if attempt == 49: raise
+            time.sleep(0.1)
 with tempfile.TemporaryDirectory(prefix='agent-auth-test-') as directory:
     root = Path(directory)
     run('ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(root/'host_key'))
