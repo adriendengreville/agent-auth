@@ -16,7 +16,19 @@ P('/etc/ssh/sshd_config').write_text('Port 2223\nUsePAM yes\nPasswordAuthenticat
 sshd='/usr/sbin/sshd.pam' if P('/usr/sbin/sshd.pam').exists() else '/usr/sbin/sshd'
 if os.environ.get('AGENT_AUTH_SYSTEMD') == 'yes':
     run('systemctl', 'stop', 'ssh.socket', 'ssh.service')
+    # Regenerate socket-activation settings for the fixture's nonstandard port.
+    run('systemctl', 'daemon-reload')
     run('systemctl', 'start', 'ssh.service')
+    for attempt in range(50):
+        try:
+            with socket.create_connection(('127.0.0.1', 2223), timeout=2) as connection:
+                assert connection.recv(256).startswith(b'SSH-2.0-')
+            break
+        except OSError:
+            if attempt == 49:
+                run('journalctl', '-u', 'ssh.service', '-n', '30', '--no-pager')
+                raise
+            time.sleep(0.1)
 else:
     run(sshd)
 original=P('/etc/pam.d/sshd').read_bytes()
