@@ -20,3 +20,9 @@ GitHub Actions repeats the suite for Debian 12, Ubuntu 24.04, and Alpine 3.22.
 Fedora/RHEL, openSUSE and Arch package adapters are not yet integration-tested.
 Systemd/OpenRC unit definitions are supplied; local Docker tests exercise the
 standalone-daemon path, not a real boot under those init systems.
+
+Service failure regression tests (`python3 -m unittest discover -s tests -p
+ 'test_*.py'`) simulate systemctl responses: successful reload, daemon exit during
+reload followed by successful start, failed recovery, and rollback restoration.
+These tests do not constitute a live systemd test. The CI authentication matrix
+also includes Debian 13 (trixie); that job still uses the standalone daemon path.

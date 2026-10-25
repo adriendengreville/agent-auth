@@ -8,9 +8,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ['debian:bookworm-slim', 'ubuntu:24.04', 'alpine:3.22']
+        image: ['debian:bookworm-slim', 'debian:trixie-slim', 'ubuntu:24.04', 'alpine:3.22']
     steps:
       - uses: actions/checkout@v4
+      - name: Test service failure recovery
+        run: python3 -m unittest discover -s tests -p 'test_*.py'
       - name: Test actual SSH authentication
         env:
           IMAGE: ${{ matrix.image }}

@@ -134,3 +134,19 @@ Mount this repo at `/src`. See `TESTING.md` for the actual verified matrix.
 
 MIT. This project configures distribution-provided OpenSSH and Google Authenticator
 PAM packages, which retain their own licenses.
+
+### SSH service exits during reload
+
+Some distribution OpenSSH builds can exit after SIGHUP with `Cannot bind any
+address` (see [Debian #1128329](https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=1128329)).
+If a systemd reload fails and the service is failed, configure starts it again
+through systemd and checks that it is active. A service already failed from an
+earlier attempt is also started. A running service whose reload fails is not
+forcibly restarted. Unresolved errors include service status and recent journal
+entries.
+
+On installation failure, the agent account is expired, changed files are restored,
+and the original SSH configuration is reapplied. Enrollment is retained. If any
+recovery step fails, the installer retains backups and records
+`/var/lib/agent-auth/recovery-required`; inspect that file before another attempt.
+Keep your current administrator session open until a new login succeeds.

@@ -65,11 +65,73 @@ def service(action):
                 n = int(pid.read_text()); cmd = P(f'/proc/{n}/cmdline').read_bytes()
                 if b'/etc/agent-auth/sshd_config' not in cmd: raise RuntimeError('PID is not agent-auth; refusing to signal it')
                 os.kill(n, 15)
+def reload_systemd(unit):
+    result = subprocess.run(['systemctl', 'reload', unit], capture_output=True, text=True)
+    if result.returncode == 0:
+        return
+    # Some distribution sshd builds exit during SIGHUP re-exec (Debian #1128329).
+    # Start only a failed service: never restart a still-running administrator daemon.
+    if subprocess.run(['systemctl', 'is-failed', '--quiet', unit]).returncode == 0:
+        print('SSH exited during reload. Asking systemd to start ' + unit + ' again.')
+        started = subprocess.run(['systemctl', 'start', unit], capture_output=True, text=True)
+        if started.returncode == 0 and subprocess.run(['systemctl', 'is-active', '--quiet', unit]).returncode == 0:
+            print('Administrator SSH service recovered successfully.')
+            return
+    # Preserve the original failure before rollback changes the service journal.
+    details = [result.stdout, result.stderr]
+    for command in (
+        ['systemctl', 'status', unit, '--no-pager', '-l'],
+        ['journalctl', '-u', unit, '-n', '40', '--no-pager'],
+    ):
+        try:
+            diagnostic = subprocess.run(command, capture_output=True, text=True, timeout=15)
+            details.extend((diagnostic.stdout, diagnostic.stderr))
+        except (OSError, subprocess.TimeoutExpired) as error:
+            details.append(str(error))
+    raise RuntimeError('Reload of ' + unit + ' failed:\n' + '\n'.join(x.strip() for x in details if x.strip()))
+
+def rollback(files, start_attempted):
+    errors = []
+    # A retained account must not gain key/password access when ordinary SSH is restored.
+    try:
+        run('usermod', '--expiredate', '1', 'agent')
+    except Exception as error:
+        errors.append('Could not expire agent: ' + str(error))
+    if start_attempted:
+        try:
+            service('stop')
+        except Exception as error:
+            errors.append('Could not stop agent listener: ' + str(error))
+    for path, data in reversed(list(files.items())):
+        try:
+            if data['existed']: shutil.copy2(data['backup'], path)
+            else: P(path).unlink(missing_ok=True)
+        except Exception as error:
+            errors.append('Could not restore ' + path + ': ' + str(error))
+    # Only reload if every file was restored successfully.
+    if not errors:
+        try:
+            reload_original()
+        except Exception as error:
+            errors.append('Restored files, but SSH recovery reload failed: ' + str(error))
+    if errors:
+        write(STATE/'recovery-required', '\n'.join(errors))
+        print('Recovery needs attention; backups and manifest retained in ' + str(STATE) + '.\n' + '\n'.join(errors), file=sys.stderr)
+        print('Keep the current administrator session open. Inspect the service before retrying.', file=sys.stderr)
+    else:
+        MANIFEST.unlink(missing_ok=True)
+        print('Configuration rolled back. Agent expired; enrollment retained for retry.', file=sys.stderr)
+
 def reload_original():
     if shutil.which('systemctl') and P('/run/systemd/system').exists():
         for unit in ('ssh.service', 'sshd.service'):
             if subprocess.run(['systemctl','is-active','--quiet',unit]).returncode == 0:
-                run('systemctl','reload',unit); return
+                reload_systemd(unit); return
+            if subprocess.run(['systemctl','is-failed','--quiet',unit]).returncode == 0:
+                print('Recovering previously failed administrator SSH service: ' + unit)
+                run('systemctl', 'start', unit)
+                run('systemctl', 'is-active', '--quiet', unit)
+                return
     elif shutil.which('rc-service') and P('/run/openrc').exists():
         if subprocess.run(['rc-service','sshd','status'], stdout=subprocess.DEVNULL).returncode == 0:
             run('rc-service','sshd','reload'); return
@@ -88,6 +150,8 @@ def main():
     if not 1<=a.port<=65535 or a.port==22: raise RuntimeError('Choose an unused port other than 22')
     STATE.mkdir(mode=0o700,parents=True,exist_ok=True); os.chmod(STATE,0o700)
     ETC.mkdir(mode=0o700,parents=True,exist_ok=True); os.chmod(ETC,0o700)
+    if (STATE/'recovery-required').exists():
+        raise RuntimeError('Previous rollback was incomplete. Inspect /var/lib/agent-auth/recovery-required and backup files; repair SSH, then remove that marker and manifest.json only after restoring the original files.')
     if a.uninstall:
         if not MANIFEST.exists(): raise RuntimeError('No installation to uninstall')
         m=json.loads(MANIFEST.read_text())
@@ -138,6 +202,7 @@ def main():
         files[str(path)]={'backup':str(backup),'existed':existed,'installed':hashlib.sha256(text.encode()).hexdigest()}
         write(path,text,mode)
     original=PAM.read_text() if PAM.exists() else 'auth required pam_unix.so\naccount required pam_unix.so\nsession required pam_unix.so\n'
+    start_attempted = False
     try:
         install(P('/etc/pam.d/agent-auth-original'), original,0o644)
         install(P('/etc/pam.d/agent-auth-otp'), 'auth requisite pam_google_authenticator.so secret=/etc/agent-auth/agent.totp user=root\nauth required pam_permit.so\n',0o644)
@@ -195,13 +260,11 @@ start_pre() {{ checkpath --directory --mode 0755 /run/sshd; }}
             if value not in effective: raise RuntimeError('Unexpected effective SSH configuration: '+value)
         write(MANIFEST,json.dumps(files,indent=2))
         reload_original()
-        if not a.no_start: service('start')
+        if not a.no_start:
+            start_attempted = True
+            service('start')
     except BaseException:
-        for path,d in reversed(list(files.items())):
-            if d['existed']: shutil.copy2(d['backup'],path)
-            else: P(path).unlink(missing_ok=True)
-        MANIFEST.unlink(missing_ok=True)
-        print('Configuration rolled back. Enrollment and account retained for retry.',file=sys.stderr)
+        rollback(files, start_attempted)
         raise
     print(f'\nConfigured. Connect: ssh -p {a.port} agent@<target-ip>\nAgent has no sudo privileges. Existing administrator SSH remains on its original port.')
     print('Keep your administrator session open and verify a NEW administrator login and an agent OTP login.')
