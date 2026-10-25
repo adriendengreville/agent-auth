@@ -34,3 +34,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y openssh-server
       - name: Exercise a real failed reload and listener recovery
         run: sudo env AGENT_AUTH_DISPOSABLE=yes python3 tests/systemd_recovery.py
+      - name: Full installation and authentication under systemd
+        run: |
+          sudo apt-get install -y python3-paramiko python3-pexpect
+          sudo ln -s "$PWD" /src
+          sudo env AGENT_AUTH_DISPOSABLE=yes AGENT_AUTH_SYSTEMD=yes python3 -u tests/integration.py

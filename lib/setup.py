@@ -49,7 +49,9 @@ def service(action):
     if shutil.which('systemctl') and P('/run/systemd/system').exists():
         if action == 'start':
             run('systemctl', 'daemon-reload'); run('systemctl', 'enable', '--now', 'agent-auth.service')
-        else: run('systemctl', 'disable', '--now', 'agent-auth.service')
+        else:
+            run('systemctl', 'stop', 'agent-auth.service')
+            run('systemctl', 'disable', 'agent-auth.service')
     elif shutil.which('rc-service') and P('/run/openrc').exists():
         if action == 'start': run('rc-update', 'add', 'agent-auth', 'default')
         run('rc-service', 'agent-auth', action)
@@ -144,14 +146,48 @@ def reload_original():
                 if b'sshd' in cmd and b'agent-auth' not in cmd: os.kill(n,1)
                 return
         print('No original SSH daemon found running; its agent restriction applies on next startup.')
+def recover_service_collision():
+    """Resume the known old OpenRC-on-systemd rollback only after checking every file."""
+    marker = STATE/'recovery-required'
+    if not marker.exists(): return
+    message = marker.read_text()
+    if not message.startswith('Could not stop agent listener:') or '\n' in message:
+        raise RuntimeError('Recovery requires manual inspection: ' + str(marker))
+    files = json.loads(MANIFEST.read_text())
+    for name, data in files.items():
+        path = P(name)
+        if data['existed']:
+            restored = path.exists() and path.read_bytes() == P(data['backup']).read_bytes()
+        else:
+            restored = not path.exists() and not path.is_symlink()
+        if not restored:
+            raise RuntimeError('Recovery stopped: file is not restored to its backup: ' + name)
+    unit = '/etc/systemd/system/agent-auth.service'
+    if unit not in files or files[unit]['existed']:
+        raise RuntimeError('Recovery stopped: pre-existing or untracked service needs inspection')
+    # A failed enable may leave this symlink even though rollback removed the unit.
+    link = P('/etc/systemd/system/multi-user.target.wants/agent-auth.service')
+    if link.is_symlink():
+        if link.resolve() != P(unit):
+            raise RuntimeError('Recovery stopped: unexpected service enablement symlink')
+        link.unlink()
+    if subprocess.run(['systemctl', 'is-active', '--quiet', 'agent-auth.service']).returncode == 0:
+        run('systemctl', 'stop', 'agent-auth.service')
+    run('systemctl', 'daemon-reload')
+    P('/run/sshd').mkdir(mode=0o755, exist_ok=True)
+    run(shutil.which('sshd') or '/usr/sbin/sshd', '-t')
+    reload_original()
+    MANIFEST.unlink()
+    marker.unlink()
+    print('Verified previous rollback and cleared the service collision recovery marker.')
+
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument('--port',type=int,default=2222); ap.add_argument('--no-start',action='store_true'); ap.add_argument('--uninstall',action='store_true'); a=ap.parse_args()
     if os.geteuid()!=0: raise RuntimeError('Root required')
     if not 1<=a.port<=65535 or a.port==22: raise RuntimeError('Choose an unused port other than 22')
     STATE.mkdir(mode=0o700,parents=True,exist_ok=True); os.chmod(STATE,0o700)
     ETC.mkdir(mode=0o700,parents=True,exist_ok=True); os.chmod(ETC,0o700)
-    if (STATE/'recovery-required').exists():
-        raise RuntimeError('Previous rollback was incomplete. Inspect /var/lib/agent-auth/recovery-required and backup files; repair SSH, then remove that marker and manifest.json only after restoring the original files.')
+    recover_service_collision()
     if a.uninstall:
         if not MANIFEST.exists(): raise RuntimeError('No installation to uninstall')
         m=json.loads(MANIFEST.read_text())
@@ -234,7 +270,8 @@ LoginGraceTime 120
 LogLevel VERBOSE
 ''')
         install(ETC/'start',f'#!/bin/sh\nmkdir -p /run/sshd\nexec {sshd} -f /etc/agent-auth/sshd_config "$@"\n',0o700)
-        install(P('/etc/systemd/system/agent-auth.service'),'''[Unit]
+        if shutil.which('systemctl'):
+            install(P('/etc/systemd/system/agent-auth.service'),'''[Unit]
 Description=Agent OTP SSH endpoint
 After=network.target
 [Service]
@@ -244,7 +281,8 @@ Restart=on-failure
 [Install]
 WantedBy=multi-user.target
 ''',0o644)
-        install(P('/etc/init.d/agent-auth'),f'''#!/sbin/openrc-run
+        elif shutil.which('rc-service'):
+            install(P('/etc/init.d/agent-auth'),f'''#!/sbin/openrc-run
 name="Agent OTP SSH"
 command="{sshd}"
 command_args="-f /etc/agent-auth/sshd_config"

@@ -1,4 +1,5 @@
 """Service failure regression tests; never touches host SSH configuration."""
+import json
 import importlib.util
 import pathlib
 import subprocess
@@ -11,6 +12,21 @@ setup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(setup)
 
 class RecoveryTests(unittest.TestCase):
+    def test_collision_recovery_rejects_modified_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            config, backup = root/'config', root/'backup'
+            config.write_text('operator edits'); backup.write_text('original')
+            (root/'recovery-required').write_text('Could not stop agent listener: failure')
+            manifest = root/'manifest.json'
+            manifest.write_text(json.dumps({str(config): {'existed': True, 'backup': str(backup)}}))
+            with patch.object(setup, 'STATE', root), patch.object(setup, 'MANIFEST', manifest), patch.object(setup, 'run') as run:
+                with self.assertRaisesRegex(RuntimeError, 'not restored'):
+                    setup.recover_service_collision()
+                run.assert_not_called()
+            self.assertTrue(manifest.exists())
+            self.assertEqual(config.read_text(), 'operator edits')
+
     def test_reload_failure_includes_status_and_journal(self):
         results = [subprocess.CompletedProcess([], 1, '', 'reload failed'),
                    subprocess.CompletedProcess([], 1, '', ''),

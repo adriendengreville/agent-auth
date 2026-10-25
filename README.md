@@ -150,3 +150,11 @@ and the original SSH configuration is reapplied. Enrollment is retained. If any
 recovery step fails, the installer retains backups and records
 `/var/lib/agent-auth/recovery-required`; inspect that file before another attempt.
 Keep your current administrator session open until a new login succeeds.
+
+Only the appropriate init service definition is installed: the systemd unit when
+systemctl is available, otherwise the OpenRC script when rc-service is available.
+Installing both under the same name makes Debian's SysV synchronization reject the
+OpenRC script. For the old version's specific failed-cleanup marker, a rerun checks
+that every tracked file matches its restored backup (or is absent if newly created),
+cleans up service enablement, and reapplies administrator SSH before retrying.
+It retains the OTP seed and refuses automatic recovery if files have changed.

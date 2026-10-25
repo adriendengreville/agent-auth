@@ -32,3 +32,8 @@ Ubuntu runner. Its ExecReload deliberately kills the test daemon; the test verif
 that recovery starts a new PID and that SSH serves a fresh connection afterwards.
 This exercises real systemd recovery with an injected failure, not the original
 Debian/Proxmox bug or full enrollment under systemd.
+
+The systemd job now also runs full enrollment, enable/start, SSH authentication,
+and uninstall on its disposable Ubuntu runner. It starts with the old service
+collision's recovery marker and restored-file manifest to verify automatic retry.
+A unit regression ensures recovery refuses to overwrite operator-modified files.

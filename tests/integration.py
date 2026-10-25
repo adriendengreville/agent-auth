@@ -1,5 +1,5 @@
 """Destructive integration test: run ONLY in a disposable Linux container as root."""
-import base64, hashlib, hmac, os, pathlib, re, socket, struct, subprocess, sys, time
+import json, base64, hashlib, hmac, os, pathlib, re, socket, struct, subprocess, sys, time
 import pexpect, paramiko
 P=pathlib.Path
 if os.environ.get('AGENT_AUTH_DISPOSABLE')!='yes': raise SystemExit('Requires AGENT_AUTH_DISPOSABLE=yes')
@@ -14,12 +14,31 @@ p=P('/home/owner/.ssh');p.mkdir(mode=0o700);(p/'authorized_keys').write_text(key
 run('chown','-R','owner:owner',str(p))
 P('/etc/ssh/sshd_config').write_text('Port 2223\nUsePAM yes\nPasswordAuthentication yes\nPubkeyAuthentication yes\nPidFile /run/sshd.pid\n')
 sshd='/usr/sbin/sshd.pam' if P('/usr/sbin/sshd.pam').exists() else '/usr/sbin/sshd'
-run(sshd)
+if os.environ.get('AGENT_AUTH_SYSTEMD') == 'yes':
+    run('systemctl', 'stop', 'ssh.socket', 'ssh.service')
+    run('systemctl', 'start', 'ssh.service')
+else:
+    run(sshd)
 original=P('/etc/pam.d/sshd').read_bytes()
+if os.environ.get('AGENT_AUTH_SYSTEMD') == 'yes':
+    # Reproduce the prior version's restored files plus retained recovery marker.
+    state=P('/var/lib/agent-auth'); state.mkdir(mode=0o700, exist_ok=True)
+    backup=state/'backup-test'; backup.write_bytes(P('/etc/ssh/sshd_config').read_bytes())
+    (state/'manifest.json').write_text(json.dumps({
+        '/etc/ssh/sshd_config': {'existed': True, 'backup': str(backup)},
+        '/etc/systemd/system/agent-auth.service': {'existed': False},
+        '/etc/init.d/agent-auth': {'existed': False},
+    }))
+    (state/'recovery-required').write_text("Could not stop agent listener: Command '('systemctl', 'disable', '--now', 'agent-auth.service')' returned non-zero exit status 1.")
+
 child=pexpect.spawn('/bin/sh',['/src/configure'],timeout=300,encoding='utf-8')
 child.expect(r'Manual generation key: ([A-Z2-7]+)');seed=child.match.group(1)
 child.expect('Enter the current code from your authenticator:');child.sendline(otp(seed));child.expect(pexpect.EOF);child.close()
 if child.exitstatus!=0: raise AssertionError('configure failed: '+child.before)
+if os.environ.get('AGENT_AUTH_SYSTEMD') == 'yes':
+    assert not P('/etc/init.d/agent-auth').exists(), 'OpenRC script must not be installed on systemd'
+    run('systemctl', 'is-enabled', '--quiet', 'agent-auth.service')
+    run('systemctl', 'is-active', '--quiet', 'agent-auth.service')
 # Even an explicitly installed key must not bypass OTP.
 p=P('/home/agent/.ssh');p.mkdir(mode=0o700);(p/'authorized_keys').write_text(key.get_name()+' '+key.get_base64()+'\n');os.chmod(p/'authorized_keys',0o600)
 run('chown','-R','agent:agent',str(p))
