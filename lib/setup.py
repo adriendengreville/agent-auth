@@ -181,8 +181,48 @@ def recover_service_collision():
     marker.unlink()
     print('Verified previous rollback and cleared the service collision recovery marker.')
 
+SUDOERS = P('/etc/sudoers.d/agent-auth')
+SUDO_RULE = '# Managed by agent-auth --sudoer\nagent ALL=(ALL:ALL) NOPASSWD: ALL\n'
+
+def enable_sudo():
+    if not shutil.which('visudo') or not shutil.which('sudo'):
+        raise RuntimeError('Install sudo with your package manager, then rerun ./configure --sudoer')
+    files = json.loads(MANIFEST.read_text())
+    expected = hashlib.sha256(SUDO_RULE.encode()).hexdigest()
+    if str(SUDOERS) in files:
+        if not SUDOERS.exists() or SUDOERS.read_text() != SUDO_RULE:
+            raise RuntimeError('Managed sudoers file changed; inspect ' + str(SUDOERS))
+        run('visudo', '-c')
+        run('sudo', '-u', 'agent', '--', 'sudo', '-n', '--', 'true')
+        print('Agent passwordless sudo is already enabled.')
+        return
+    if SUDOERS.exists() or SUDOERS.is_symlink():
+        raise RuntimeError('Refusing to overwrite an unmanaged sudoers file: ' + str(SUDOERS))
+    run('visudo', '-c')
+    candidate = STATE/'sudoers-candidate'
+    write(candidate, SUDO_RULE, 0o440)
+    try:
+        run('visudo', '-cf', str(candidate))
+    finally:
+        candidate.unlink(missing_ok=True)
+    previous_manifest = MANIFEST.read_text()
+    files[str(SUDOERS)] = {'existed': False, 'backup': str(STATE/'sudoers-unused'), 'installed': expected}
+    # Record ownership first so an interrupted write remains uninstallable.
+    write(MANIFEST, json.dumps(files, indent=2))
+    try:
+        write(SUDOERS, SUDO_RULE, 0o440)
+        run('visudo', '-c')
+        # Check effective policy, including that sudoers.d is actually included.
+        run('sudo', '-u', 'agent', '--', 'sudo', '-n', '--', 'true')
+    except BaseException:
+        SUDOERS.unlink(missing_ok=True)
+        write(MANIFEST, previous_manifest)
+        raise
+    print('Agent now has unrestricted passwordless sudo. SSH OTP is still required.')
+
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument('--port',type=int,default=2222); ap.add_argument('--no-start',action='store_true'); ap.add_argument('--uninstall',action='store_true'); a=ap.parse_args()
+    ap=argparse.ArgumentParser(); ap.add_argument('--port',type=int,default=2222); ap.add_argument('--no-start',action='store_true'); ap.add_argument('--uninstall',action='store_true'); ap.add_argument('--sudoer',action='store_true'); a=ap.parse_args()
+    if a.sudoer and a.uninstall: raise RuntimeError('--sudoer cannot be combined with --uninstall')
     if os.geteuid()!=0: raise RuntimeError('Root required')
     if not 1<=a.port<=65535 or a.port==22: raise RuntimeError('Choose an unused port other than 22')
     STATE.mkdir(mode=0o700,parents=True,exist_ok=True); os.chmod(STATE,0o700)
@@ -203,6 +243,8 @@ def main():
         MANIFEST.unlink(); reload_original()
         print('Configuration restored. Agent account, installed packages and private seed retained.'); return
     if MANIFEST.exists():
+        if a.sudoer:
+            enable_sudo(); return
         print('Already installed. Use the existing enrollment; uninstall before reconfiguration.'); return
     sshd=shutil.which('sshd.pam') or shutil.which('sshd')
     if not sshd: raise RuntimeError('PAM-enabled sshd not installed')
@@ -304,7 +346,8 @@ start_pre() {{ checkpath --directory --mode 0755 /run/sshd; }}
     except BaseException:
         rollback(files, start_attempted)
         raise
-    print(f'\nConfigured. Connect: ssh -p {a.port} agent@<target-ip>\nAgent has no sudo privileges. Existing administrator SSH remains on its original port.')
+    if a.sudoer: enable_sudo()
+    print(f'\nConfigured. Connect: ssh -p {a.port} agent@<target-ip>\nAgent sudo: {"unrestricted passwordless" if a.sudoer else "not granted by this installer"}. Existing administrator SSH remains on its original port.')
     print('Keep your administrator session open and verify a NEW administrator login and an agent OTP login.')
 if __name__=='__main__':
     try: main()

@@ -12,6 +12,17 @@ setup = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(setup)
 
 class RecoveryTests(unittest.TestCase):
+    def test_sudo_policy_failure_removes_grant_and_restores_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            manifest = root/'manifest.json'; manifest.write_text('{}')
+            policy = root/'sudoers'
+            with patch.object(setup, 'STATE', root), patch.object(setup, 'MANIFEST', manifest), patch.object(setup, 'SUDOERS', policy), patch.object(setup.shutil, 'which', return_value='/fixture/tool'), patch.object(setup, 'run', side_effect=[None, None, None, RuntimeError('policy rejected')]):
+                with self.assertRaisesRegex(RuntimeError, 'policy rejected'):
+                    setup.enable_sudo()
+            self.assertFalse(policy.exists())
+            self.assertEqual(manifest.read_text(), '{}')
+
     def test_collision_recovery_rejects_modified_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

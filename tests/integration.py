@@ -43,7 +43,8 @@ if os.environ.get('AGENT_AUTH_SYSTEMD') == 'yes':
     }))
     (state/'recovery-required').write_text("Could not stop agent listener: Command '('systemctl', 'disable', '--now', 'agent-auth.service')' returned non-zero exit status 1.")
 
-child=pexpect.spawn('/bin/sh',['/src/configure'],timeout=300,encoding='utf-8')
+install_args = ['/src/configure'] + (['--sudoer'] if os.environ.get('AGENT_AUTH_SYSTEMD') == 'yes' else [])
+child=pexpect.spawn('/bin/sh',install_args,timeout=300,encoding='utf-8')
 child.expect(r'Manual generation key: ([A-Z2-7]+)');seed=child.match.group(1)
 child.expect('Enter the current code from your authenticator:');child.sendline(otp(seed));child.expect(pexpect.EOF);child.close()
 if child.exitstatus!=0: raise AssertionError('configure failed: '+child.before)
@@ -77,9 +78,18 @@ except paramiko.AuthenticationException:pass
 else:raise AssertionError('Replay accepted')
 print('PASS OTP replay rejected')
 run('su','-s','/bin/sh','agent','-c','test ! -r /etc/agent-auth/agent.totp')
-print('PASS agent cannot read seed')
+print('PASS agent cannot read seed directly')
+if os.environ.get('AGENT_AUTH_SYSTEMD') != 'yes':
+    assert not P('/etc/sudoers.d/agent-auth').exists()
+    run('/src/configure', '--sudoer')
+run('python3', '/src/lib/setup.py', '--sudoer')
+assert run('su', '-s', '/bin/sh', 'agent', '-c', 'sudo -n id -u', capture_output=True, text=True).stdout.strip() == '0'
+assert P('/etc/sudoers.d/agent-auth').stat().st_mode & 0o777 == 0o440
+print('PASS opt-in passwordless sudo and idempotent rerun')
 run('/src/configure','--uninstall')
 assert P('/etc/pam.d/sshd').read_bytes()==original
+assert not P('/etc/sudoers.d/agent-auth').exists()
+print('PASS uninstall removes managed sudo grant')
 time.sleep(2)
 assert conn('owner',2223,'key',key)=='owner'
 try:conn('agent',2223,'key',key)

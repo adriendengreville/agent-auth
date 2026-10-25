@@ -64,7 +64,7 @@ Files:
 - `/var/lib/agent-auth`: root-only configuration backups and install manifest.
 - `/etc/pam.d/agent-auth-original`: original SSH PAM stack.
 
-The `agent` account receives **no sudo rights**. An administrator can grant selected
+By default, the `agent` account receives **no sudo rights**. An administrator can grant selected
 maintenance operations separately. Unrestricted root can read the seed or bypass
 this policy. The account also must not have access to your administrator key or
 SSH-agent socket. Forwarding restrictions do not sandbox a general-purpose shell.
@@ -158,3 +158,26 @@ OpenRC script. For the old version's specific failed-cleanup marker, a rerun che
 that every tracked file matches its restored backup (or is absent if newly created),
 cleans up service enablement, and reapplies administrator SSH before retrying.
 It retains the OTP seed and refuses automatic recovery if files have changed.
+
+### Optional sudo access
+
+Run `./configure --sudoer` as root for unrestricted passwordless sudo. This works
+both during first installation and on an already enrolled target without changing
+its OTP seed or restarting SSH solely to add sudo. The installer installs `sudo`,
+validates the policy with `visudo`, and verifies effective passwordless elevation.
+The managed grant is `/etc/sudoers.d/agent-auth` (root-owned, mode 0440).
+Repeated `--sudoer` runs are idempotent; ordinary reruns do not revoke the grant.
+Uninstall removes the grant it created and refuses to overwrite an edited policy.
+Unrelated, manually created sudo grants remain untouched.
+
+```sh
+./configure --sudoer
+# In an agent SSH session:
+sudo -n id
+sudo -i
+```
+
+This allows root access after the SSH OTP check, with no further approval prompt.
+Root can read the OTP seed, alter authentication, and establish persistent access.
+If granting sudo fails on a new installation, the SSH installation remains usable;
+fix the reported sudo error and rerun `./configure --sudoer`.
