@@ -37,5 +37,7 @@ jobs:
       - name: Full installation and authentication under systemd
         run: |
           sudo apt-get install -y python3-paramiko python3-pexpect
+          # Hosted runner image ships this file with noncanonical permissions.
+          sudo chmod 0440 /etc/sudoers.d/runner
           sudo ln -s "$PWD" /src
           sudo env AGENT_AUTH_DISPOSABLE=yes AGENT_AUTH_SYSTEMD=yes python3 -u tests/integration.py
