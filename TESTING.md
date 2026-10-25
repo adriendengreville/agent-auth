@@ -26,3 +26,9 @@ Service failure regression tests (`python3 -m unittest discover -s tests -p
 reload followed by successful start, failed recovery, and rollback restoration.
 These tests do not constitute a live systemd test. The CI authentication matrix
 also includes Debian 13 (trixie); that job still uses the standalone daemon path.
+
+A separate `systemd-recovery` CI job runs a dedicated loopback SSH service on the
+Ubuntu runner. Its ExecReload deliberately kills the test daemon; the test verifies
+that recovery starts a new PID and that SSH serves a fresh connection afterwards.
+This exercises real systemd recovery with an injected failure, not the original
+Debian/Proxmox bug or full enrollment under systemd.
